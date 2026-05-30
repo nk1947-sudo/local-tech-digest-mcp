@@ -15,6 +15,7 @@ export function getDb(): Database.Database {
   _db = new Database(DB_PATH);
   _db.pragma('journal_mode = WAL');
   applySchema(_db);
+  applyMigrations(_db);
   return _db;
 }
 
@@ -60,7 +61,10 @@ function applySchema(db: Database.Database): void {
       hash        TEXT    UNIQUE NOT NULL,
       score       INTEGER NOT NULL DEFAULT 0,
       first_seen  TEXT    NOT NULL,
-      notified    INTEGER NOT NULL DEFAULT 0
+      notified    INTEGER NOT NULL DEFAULT 0,
+      salary_min  INTEGER DEFAULT NULL,
+      salary_max  INTEGER DEFAULT NULL,
+      status      TEXT    NOT NULL DEFAULT 'new'
     );
     CREATE INDEX IF NOT EXISTS idx_jobs_hash   ON jobs(hash);
     CREATE INDEX IF NOT EXISTS idx_jobs_score  ON jobs(score);
@@ -68,4 +72,16 @@ function applySchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_jobs_domain ON jobs(domain);
     CREATE INDEX IF NOT EXISTS idx_jobs_type   ON jobs(job_type);
   `);
+}
+
+/** Safe column additions — silently skips if already present. */
+function applyMigrations(db: Database.Database): void {
+  const add = (col: string, def: string) => {
+    try { db.exec(`ALTER TABLE jobs ADD COLUMN ${col} ${def}`); } catch {}
+  };
+  add('salary_min', 'INTEGER DEFAULT NULL');
+  add('salary_max', 'INTEGER DEFAULT NULL');
+  add('status',     "TEXT NOT NULL DEFAULT 'new'");
+  // Index on status must come AFTER the column is guaranteed to exist
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)'); } catch {}
 }

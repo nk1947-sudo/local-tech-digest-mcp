@@ -1,38 +1,10 @@
 import nodemailer from 'nodemailer';
 import 'dotenv/config';
-import { getUnnotifiedJobs,           markJobsNotified,         type JobRow }         from '../db/jobs.js';
-import { getUnnotifiedConferences,    markConferencesNotified,  type ConferenceRow }   from '../db/conferences.js';
-import { buildJobsSection }                                                            from './jobs-section.js';
-import { buildConferenceSection }                                                      from './conf-section.js';
-
-// ─── Region detection ────────────────────────────────────────────────────────
-
-const FOREIGN_COUNTRIES = /\b(germany|uk|united kingdom|england|scotland|wales|canada|australia|india|france|spain|netherlands|ireland|poland|brazil|mexico|singapore|japan|china|sweden|norway|denmark|finland|austria|switzerland|belgium|portugal|new zealand|south africa|israel|italy|czech|romania|ukraine|pakistan|argentina|chile|colombia|philippines|malaysia|thailand|vietnam|indonesia|kenya|nigeria|egypt|turkey|greece|hungary|serbia|croatia|latvia|estonia|lithuania|slovakia|slovenia|bulgaria)\b/i;
-
-const USA_STATE_CODES = new Set([
-  'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA',
-  'KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ',
-  'NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT',
-  'VA','WA','WV','WI','WY','DC',
-]);
-
-export function classifyRegion(location: string | null): 'usa' | 'international' {
-  if (!location) return 'usa';                        // unspecified → default USA
-  if (FOREIGN_COUNTRIES.test(location)) return 'international';
-
-  // "Remote in [non-USA country]" pattern
-  if (/remote\s+in\s+/i.test(location)) {
-    if (!/remote\s+in\s+(the\s+)?(usa|united\s+states)/i.test(location)) {
-      return 'international';
-    }
-  }
-
-  // Has a two-letter code — check if it's a US state
-  const m = location.match(/,\s*([A-Z]{2})(?:\s*,|\s*$)/);
-  if (m) return USA_STATE_CODES.has(m[1]) ? 'usa' : 'international';
-
-  return 'usa';                                       // "Remote", city-only, etc. → USA
-}
+import { getUnnotifiedJobs,        markJobsNotified,        type JobRow }        from '../db/jobs.js';
+import { getUnnotifiedConferences, markConferencesNotified, type ConferenceRow } from '../db/conferences.js';
+import { buildTop5Section, buildJobsSection }                                    from './jobs-section.js';
+import { buildConferenceSection }                                                from './conf-section.js';
+import type { JobScrapeResult }                                                  from '../scrapers/jobs/index.js';
 
 export interface DigestResult {
   sent:      boolean;
@@ -43,19 +15,39 @@ export interface DigestResult {
 
 export type DigestMode = 'daily' | 'weekly';
 
-const MIN_SCORE          = Number(process.env.MIN_JOB_SCORE       ?? 0);
-const MAX_PER_DOMAIN     = Number(process.env.MAX_JOBS_PER_DOMAIN ?? 25);
+const MIN_SCORE      = Number(process.env.MIN_JOB_SCORE       ?? 0);
+const MAX_PER_DOMAIN = Number(process.env.MAX_JOBS_PER_DOMAIN ?? 25);
 
-// ─── public API ──────────────────────────────────────────────────────────────
+// ─── Region classifier ────────────────────────────────────────────────────────
 
-/**
- * mode='daily'  → jobs only (no conferences section)
- * mode='weekly' → jobs + conferences
- */
-export async function sendDigestEmail(mode: DigestMode = 'daily'): Promise<DigestResult> {
+const FOREIGN_COUNTRIES = /\b(germany|uk|united kingdom|england|scotland|wales|canada|australia|india|france|spain|netherlands|ireland|poland|brazil|mexico|singapore|japan|china|sweden|norway|denmark|finland|austria|switzerland|belgium|portugal|new zealand|south africa|israel|italy|czech|romania|ukraine|pakistan|argentina|colombia|philippines|malaysia|thailand|vietnam|indonesia|kenya|nigeria|egypt|turkey|greece|hungary|serbia|bulgaria|latvia|estonia|lithuania)\b/i;
+
+const USA_STATES = new Set([
+  'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA',
+  'KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ',
+  'NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT',
+  'VA','WA','WV','WI','WY','DC',
+]);
+
+export function classifyRegion(location: string | null): 'usa' | 'international' {
+  if (!location) return 'usa';
+  if (FOREIGN_COUNTRIES.test(location)) return 'international';
+  if (/remote\s+in\s+/i.test(location) && !/remote\s+in\s+(the\s+)?(usa|united\s+states)/i.test(location)) {
+    return 'international';
+  }
+  const m = location.match(/,\s*([A-Z]{2})(?:\s*,|\s*$)/);
+  if (m) return USA_STATES.has(m[1]) ? 'usa' : 'international';
+  return 'usa';
+}
+
+// ─── Send ──────────────────────────────────────────────────────────────────────
+
+export async function sendDigestEmail(
+  mode:         DigestMode = 'daily',
+  scrapeStats?: JobScrapeResult,
+): Promise<DigestResult> {
   const rawJobs = getUnnotifiedJobs(MIN_SCORE);
 
-  // Split into USA and international before applying per-domain cap
   const rawUSA  = rawJobs.filter(j => classifyRegion(j.location) === 'usa');
   const rawIntl = rawJobs.filter(j => classifyRegion(j.location) === 'international');
 
@@ -71,11 +63,9 @@ export async function sendDigestEmail(mode: DigestMode = 'daily'): Promise<Diges
 
   const usaJobs  = capByDomain(rawUSA);
   const intlJobs = capByDomain(rawIntl);
-  const jobs     = [...usaJobs, ...intlJobs];        // combined for notified marking
+  const confs    = mode === 'weekly' ? getUnnotifiedConferences() : [];
 
-  const confs = mode === 'weekly' ? getUnnotifiedConferences() : [];
-
-  if (jobs.length === 0 && confs.length === 0) {
+  if (rawJobs.length === 0 && confs.length === 0) {
     return { sent: false, jobCount: 0, confCount: 0, error: 'Nothing new to report.' };
   }
 
@@ -89,15 +79,14 @@ export async function sendDigestEmail(mode: DigestMode = 'daily'): Promise<Diges
   });
 
   const subjectTag = mode === 'weekly' ? 'Weekly Digest' : 'Daily Jobs';
-  const totalJobs  = rawJobs.length;
-  const subject    = `&#128640; ${subjectTag} — ${dateLabel} | ${usaJobs.length} USA · ${intlJobs.length} intl${confs.length ? ` · ${confs.length} conf` : ''}`;
-  const html       = buildHtml({ usaJobs, intlJobs, confs, dateLabel, mode, totalJobs });
+  const subject    = `🚀 ${subjectTag} — ${dateLabel} | ${usaJobs.length} USA · ${intlJobs.length} intl${confs.length ? ` · ${confs.length} conf` : ''}`;
+  const html       = buildHtml({ usaJobs, intlJobs, confs, dateLabel, mode, rawJobs, scrapeStats });
 
   const transport = nodemailer.createTransport({
     host:   process.env.SMTP_HOST ?? 'smtp.gmail.com',
     port:   Number(process.env.SMTP_PORT ?? 587),
     secure: process.env.SMTP_SECURE === 'true',
-    auth: { user: process.env.SMTP_USER!, pass: process.env.SMTP_PASS! },
+    auth:   { user: process.env.SMTP_USER!, pass: process.env.SMTP_PASS! },
   });
 
   try {
@@ -108,7 +97,6 @@ export async function sendDigestEmail(mode: DigestMode = 'daily'): Promise<Diges
       html,
     });
 
-    // Mark ALL fetched jobs notified (not just the capped subset shown in email)
     markJobsNotified(rawJobs.map(j => j.id));
     if (confs.length) markConferencesNotified(confs.map(c => c.id));
 
@@ -118,32 +106,43 @@ export async function sendDigestEmail(mode: DigestMode = 'daily'): Promise<Diges
   }
 }
 
-// ─── HTML shell ──────────────────────────────────────────────────────────────
+// ─── HTML shell ───────────────────────────────────────────────────────────────
 
 function buildHtml(opts: {
-  usaJobs:   JobRow[];
-  intlJobs:  JobRow[];
-  confs:     ConferenceRow[];
-  dateLabel: string;
-  mode:      DigestMode;
-  totalJobs: number;
+  usaJobs:      JobRow[];
+  intlJobs:     JobRow[];
+  confs:        ConferenceRow[];
+  dateLabel:    string;
+  mode:         DigestMode;
+  rawJobs:      JobRow[];
+  scrapeStats?: JobScrapeResult;
 }): string {
-  const { usaJobs, intlJobs, confs, dateLabel, mode, totalJobs } = opts;
+  const { usaJobs, intlJobs, confs, dateLabel, mode, rawJobs, scrapeStats } = opts;
   const isWeekly = mode === 'weekly';
+  const allJobs  = [...usaJobs, ...intlJobs];
 
-  const confCountPill = isWeekly && confs.length
-    ? `<span style="background:rgba(255,255,255,.12);color:#fff;padding:6px 16px;
+  const confPill = isWeekly && confs.length
+    ? `<span style="background:rgba(255,255,255,.12);color:#fff;padding:6px 14px;
                     border-radius:20px;font-size:13px;font-weight:600;">
          &#127881; ${confs.length} conferences
-       </span>`
-    : '';
+       </span>` : '';
+
+  // Stats block
+  const statsHtml = scrapeStats ? `
+    <div style="background:#1e293b;padding:10px 20px;border-left:1px solid #334155;
+                border-right:1px solid #334155;text-align:center;font-size:12px;">
+      <span style="color:#94a3b8;">This run: &nbsp;</span>
+      ${Object.entries(scrapeStats.sources).map(([src, s]) =>
+        `<span style="color:#64748b;margin:0 8px;">${src} <strong style="color:#cbd5e1;">+${s.added}</strong></span>`
+      ).join('')}
+      ${scrapeStats.errors.length
+        ? `<span style="color:#ef4444;margin-left:12px;">&#9888; ${scrapeStats.errors.length} source error${scrapeStats.errors.length > 1 ? 's' : ''}</span>`
+        : ''}
+    </div>` : '';
 
   return `<!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-</head>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
 <body style="margin:0;padding:16px 8px;background:#f1f5f9;
              font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
   <div style="max-width:700px;margin:0 auto;">
@@ -165,22 +164,24 @@ function buildHtml(opts: {
                      border-radius:20px;font-size:13px;font-weight:600;">
           &#127758; ${intlJobs.length} international
         </span>` : ''}
-        ${confCountPill}
+        ${confPill}
       </div>
     </div>
 
-    <!-- Profile strip -->
+    <!-- Profile + stats strip -->
     <div style="background:#1e293b;padding:10px 20px;text-align:center;
                 border-left:1px solid #334155;border-right:1px solid #334155;">
       ${['Cybersecurity', 'Cloud/DevOps', 'Web Dev', 'SysAdmin',
          'Entry-Level &amp; Interns', 'F-1 OPT Friendly', 'Remote + USA']
-        .map(t => `<span style="display:inline-block;margin:3px;padding:3px 9px;
-                               background:#334155;color:#94a3b8;border-radius:20px;font-size:11px;">${t}</span>`)
+        .map(t => `<span style="display:inline-block;margin:3px;padding:3px 9px;background:#334155;
+                               color:#94a3b8;border-radius:20px;font-size:11px;">${t}</span>`)
         .join('')}
     </div>
+    ${statsHtml}
 
     <!-- Body -->
     <div style="padding:16px 0;">
+      ${buildTop5Section(allJobs)}
       ${buildJobsSection(usaJobs, 'usa')}
       ${isWeekly ? buildConferenceSection(confs) : ''}
       ${intlJobs.length ? buildJobsSection(intlJobs, 'international') : ''}
@@ -189,10 +190,12 @@ function buildHtml(opts: {
     <!-- Footer -->
     <div style="background:#fff;border:1px solid #e2e8f0;border-radius:0 0 14px 14px;
                 padding:14px 20px;text-align:center;">
-      <p style="margin:0;font-size:11px;color:#94a3b8;">
-        Generated locally &mdash; 100% private, zero cloud dependency.
-        <br>Jobs: SimplifyJobs &middot; RemoteOK &middot; The Muse
-        ${isWeekly ? '&nbsp;|&nbsp; Conferences: confs.tech' : ''}
+      <p style="margin:0 0 4px;font-size:12px;color:#94a3b8;">
+        Generated locally &mdash; 100% private, zero cloud.
+      </p>
+      <p style="margin:0;font-size:11px;color:#cbd5e1;">
+        ${rawJobs.length} total new jobs this run &nbsp;|&nbsp;
+        Score: stack match + OPT company bonus + recency boost
       </p>
     </div>
 

@@ -1,4 +1,5 @@
 import { type JobRow } from '../db/jobs.js';
+import { fmtSalary } from '../utils/salary.js';
 
 const DOMAIN_ICON: Record<string, string> = {
   'Cybersecurity':   '&#128274;',
@@ -14,17 +15,24 @@ const DOMAIN_COLOR: Record<string, string> = {
   'SysAdmin':        '#7c3aed',
 };
 
+const STATUS_BADGE: Record<string, string> = {
+  saved:        '<span style="background:#fef9c3;color:#854d0e;font-size:10px;padding:2px 7px;border-radius:10px;border:1px solid #fde68a;">⭐ Saved</span>',
+  applied:      '<span style="background:#dcfce7;color:#166534;font-size:10px;padding:2px 7px;border-radius:10px;border:1px solid #bbf7d0;">✓ Applied</span>',
+  interviewing: '<span style="background:#dbeafe;color:#1e40af;font-size:10px;padding:2px 7px;border-radius:10px;border:1px solid #bfdbfe;">🎤 Interviewing</span>',
+  offer:        '<span style="background:#fce7f3;color:#9d174d;font-size:10px;padding:2px 7px;border-radius:10px;border:1px solid #fbcfe8;">🎉 Offer!</span>',
+};
+
 function scoreBar(score: number): string {
-  const max   = 14;
-  const pct   = Math.min(Math.round((score / max) * 100), 100);
-  const color = score >= 8 ? '#16a34a' : score >= 4 ? '#d97706' : '#94a3b8';
+  const cap   = Math.min(score, 20);
+  const pct   = Math.round((cap / 20) * 100);
+  const color = score >= 12 ? '#16a34a' : score >= 7 ? '#d97706' : '#94a3b8';
   return `
     <div style="display:flex;align-items:center;gap:6px;margin-top:6px;">
       <span style="font-size:11px;color:#94a3b8;white-space:nowrap;">Match</span>
       <div style="flex:1;height:5px;background:#f1f5f9;border-radius:3px;overflow:hidden;">
         <div style="width:${pct}%;height:100%;background:${color};border-radius:3px;"></div>
       </div>
-      <span style="font-size:11px;color:${color};font-weight:700;min-width:30px;">${score}/${max}</span>
+      <span style="font-size:11px;color:${color};font-weight:700;min-width:36px;">${score} pts</span>
     </div>`;
 }
 
@@ -33,19 +41,12 @@ function pill(text: string, bg: string, fg: string, border: string): string {
                         border-radius:10px;background:${bg};color:${fg};border:1px solid ${border};">${text}</span>`;
 }
 
-function sponsorBadge(s: string | null): string {
-  if (!s) return '';
-  if (s === 'Offers Sponsorship') return pill('&#10003; Visa Sponsor', '#dcfce7', '#166534', '#bbf7d0');
-  return '';
-}
-
 function groupByDomain(rows: JobRow[]): Map<string, JobRow[]> {
   const map = new Map<string, JobRow[]>();
   for (const r of rows) {
     if (!map.has(r.domain)) map.set(r.domain, []);
     map.get(r.domain)!.push(r);
   }
-  // sort domains by avg score descending
   return new Map(
     [...map.entries()].sort(([, a], [, b]) => {
       const avg = (arr: JobRow[]) => arr.reduce((s, j) => s + j.score, 0) / arr.length;
@@ -53,6 +54,90 @@ function groupByDomain(rows: JobRow[]): Map<string, JobRow[]> {
     }),
   );
 }
+
+function jobCard(j: JobRow): string {
+  const tags: string[] = JSON.parse(j.tags);
+  const tagBadges = tags.slice(0, 5).map(t => pill(t, '#f8fafc', '#475569', '#e2e8f0')).join('');
+
+  const typeLabel  = j.job_type === 'internship'
+    ? pill('Internship', '#ede9fe', '#5b21b6', '#ddd6fe')
+    : pill('Full-Time',  '#e0f2fe', '#0369a1', '#bae6fd');
+  const remotePill = j.remote ? pill('&#127968; Remote', '#dcfce7', '#166534', '#bbf7d0') : '';
+  const sponsorBadge = j.sponsorship === 'Offers Sponsorship'
+    ? pill('&#10003; Visa Sponsor', '#dcfce7', '#166534', '#bbf7d0') : '';
+  const statusBadge  = STATUS_BADGE[j.status] ?? '';
+  const salaryStr    = fmtSalary(j.salary_min, j.salary_max);
+  const salaryBadge  = salaryStr
+    ? pill(`&#128181; ${salaryStr}`, '#fefce8', '#713f12', '#fde68a') : '';
+  const dateLabel  = j.date_posted
+    ? `<span style="font-size:11px;color:#94a3b8;">Posted ${j.date_posted}</span>` : '';
+  const borderColor = j.score >= 12 ? '#16a34a' : j.score >= 7 ? '#d97706' : '#e2e8f0';
+
+  return `
+    <div style="background:#fff;border:1px solid #e2e8f0;border-left:4px solid ${borderColor};
+                border-radius:8px;padding:14px 16px;margin-bottom:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:0;">
+          <a href="${j.url}" style="font-weight:700;font-size:14px;color:#1d4ed8;text-decoration:none;word-break:break-word;"
+             target="_blank">${j.title}</a>
+          <div style="font-size:12px;color:#475569;margin-top:2px;">
+            &#127970; ${j.company}${j.location ? `&nbsp;&bull;&nbsp;&#128205; ${j.location}` : ''}
+          </div>
+        </div>
+        <div style="flex-shrink:0;text-align:right;">${dateLabel}</div>
+      </div>
+      <div style="margin-top:8px;line-height:1.8;">${typeLabel}${remotePill}${sponsorBadge}${salaryBadge}${statusBadge}</div>
+      ${tagBadges ? `<div style="margin-top:4px;line-height:1.8;">${tagBadges}</div>` : ''}
+      ${scoreBar(j.score)}
+      <div style="margin-top:10px;">
+        <a href="${j.apply_url ?? j.url}"
+           style="display:inline-block;padding:6px 16px;background:#1d4ed8;color:#fff;
+                  font-size:12px;font-weight:700;border-radius:6px;text-decoration:none;"
+           target="_blank">Apply &rarr;</a>
+      </div>
+    </div>`;
+}
+
+// ─── Top 5 Picks ─────────────────────────────────────────────────────────────
+
+export function buildTop5Section(rows: JobRow[]): string {
+  const top = [...rows].sort((a, b) => b.score - a.score).slice(0, 5);
+  if (!top.length) return '';
+
+  const cards = top.map((j, i) => `
+    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;
+                padding:14px 16px;margin-bottom:10px;
+                border-left:5px solid ${i === 0 ? '#f59e0b' : i === 1 ? '#9ca3af' : '#b45309'};">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <span style="font-size:20px;">${i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '⭐'}</span>
+        <div style="flex:1;">
+          <a href="${j.url}" style="font-weight:700;font-size:14px;color:#1d4ed8;text-decoration:none;"
+             target="_blank">${j.title}</a>
+          <div style="font-size:12px;color:#475569;">
+            ${j.company} &bull; ${j.domain} &bull;
+            <strong style="color:${j.score >= 12 ? '#16a34a' : '#d97706'};">${j.score} pts</strong>
+            ${fmtSalary(j.salary_min, j.salary_max) ? `&bull; <strong>${fmtSalary(j.salary_min, j.salary_max)}</strong>` : ''}
+          </div>
+        </div>
+        <a href="${j.apply_url ?? j.url}"
+           style="padding:5px 14px;background:#f59e0b;color:#fff;font-size:12px;
+                  font-weight:700;border-radius:6px;text-decoration:none;white-space:nowrap;"
+           target="_blank">Apply &rarr;</a>
+      </div>
+    </div>`).join('');
+
+  return `
+    <div style="background:linear-gradient(135deg,#fffbeb,#fef3c7);border:2px solid #f59e0b;
+                border-radius:12px;padding:20px 22px;margin-bottom:20px;">
+      <h2 style="margin:0 0 14px;font-size:17px;font-weight:800;color:#92400e;">
+        &#11088; Top ${top.length} Stack Matches This Week
+        <span style="font-size:12px;font-weight:400;color:#b45309;margin-left:6px;">highest scores first</span>
+      </h2>
+      ${cards}
+    </div>`;
+}
+
+// ─── Domain sections ──────────────────────────────────────────────────────────
 
 export function buildJobsSection(rows: JobRow[], mode: 'usa' | 'international' = 'usa'): string {
   if (!rows.length) return '';
@@ -62,63 +147,14 @@ export function buildJobsSection(rows: JobRow[], mode: 'usa' | 'international' =
   const sections   = [...groups.entries()].map(([domain, jobs]) => {
     const ico   = DOMAIN_ICON[domain]  ?? '&#128197;';
     const color = DOMAIN_COLOR[domain] ?? '#64748b';
-
-    const cards = jobs.map(j => {
-      const tags: string[] = JSON.parse(j.tags);
-      const tagBadges = tags.slice(0, 5)
-        .map(t => pill(t, '#f8fafc', '#475569', '#e2e8f0'))
-        .join('');
-
-      const typeLabel  = j.job_type === 'internship'
-        ? pill('Internship', '#ede9fe', '#5b21b6', '#ddd6fe')
-        : pill('Full-Time',  '#e0f2fe', '#0369a1', '#bae6fd');
-      const remotePill = j.remote ? pill('&#127968; Remote', '#dcfce7', '#166534', '#bbf7d0') : '';
-      const sponsor    = sponsorBadge(j.sponsorship);
-      const dateStr    = j.date_posted
-        ? `<span style="font-size:11px;color:#94a3b8;">Posted ${j.date_posted}</span>`
-        : '';
-
-      const borderColor = j.score >= 8 ? '#16a34a' : j.score >= 4 ? '#d97706' : '#e2e8f0';
-
-      return `
-        <div style="background:#fff;border:1px solid #e2e8f0;border-left:4px solid ${borderColor};
-                    border-radius:8px;padding:14px 16px;margin-bottom:10px;">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
-            <div style="flex:1;min-width:0;">
-              <a href="${j.url}" style="font-weight:700;font-size:14px;color:#1d4ed8;text-decoration:none;
-                                        word-break:break-word;" target="_blank">${j.title}</a>
-              <div style="font-size:12px;color:#475569;margin-top:2px;">
-                &#127970; ${j.company}
-                ${j.location ? `&nbsp;&bull;&nbsp;&#128205; ${j.location}` : ''}
-              </div>
-            </div>
-            <div style="flex-shrink:0;text-align:right;">${dateStr}</div>
-          </div>
-
-          <div style="margin-top:8px;line-height:1.8;">${typeLabel}${remotePill}${sponsor}</div>
-          ${tagBadges ? `<div style="margin-top:4px;line-height:1.8;">${tagBadges}</div>` : ''}
-
-          ${scoreBar(j.score)}
-
-          <div style="margin-top:10px;">
-            <a href="${j.apply_url ?? j.url}"
-               style="display:inline-block;padding:6px 16px;background:#1d4ed8;color:#fff;
-                      font-size:12px;font-weight:700;border-radius:6px;text-decoration:none;"
-               target="_blank">Apply &rarr;</a>
-          </div>
-        </div>`;
-    }).join('');
-
     return `
       <div style="margin-bottom:24px;">
         <div style="font-size:15px;font-weight:700;color:${color};margin-bottom:10px;
                     padding-left:8px;border-left:3px solid ${color};">
           ${ico}&nbsp; ${domain}
-          <span style="font-size:12px;font-weight:400;color:#94a3b8;">
-            &nbsp;${jobs.length} role${jobs.length !== 1 ? 's' : ''}
-          </span>
+          <span style="font-size:12px;font-weight:400;color:#94a3b8;">&nbsp;${jobs.length} role${jobs.length !== 1 ? 's' : ''}</span>
         </div>
-        ${cards}
+        ${jobs.map(jobCard).join('')}
       </div>`;
   }).join('');
 
@@ -129,8 +165,7 @@ export function buildJobsSection(rows: JobRow[], mode: 'usa' | 'international' =
   const intlNote    = isIntl
     ? `<div style="background:#ede9fe;border:1px solid #ddd6fe;border-radius:8px;
                    padding:10px 14px;margin-bottom:16px;font-size:12px;color:#5b21b6;">
-         &#8505;&#65039; These roles are based outside the USA. Visa/relocation requirements vary.
-         Verify work authorization before applying.
+         &#8505;&#65039; These roles are based outside the USA. Verify work authorization before applying.
        </div>`
     : '';
 
@@ -143,10 +178,9 @@ export function buildJobsSection(rows: JobRow[], mode: 'usa' | 'international' =
           ${rows.length} position${rows.length !== 1 ? 's' : ''}
         </span>
       </h2>
-      ${intlNote}
-      ${sections}
+      ${intlNote}${sections}
       <div style="margin-top:8px;font-size:11px;color:#94a3b8;text-align:right;">
-        Sources: SimplifyJobs &middot; RemoteOK &middot; The Muse
+        Sources: SimplifyJobs &middot; RemoteOK &middot; The Muse &middot; Remotive &middot; Jobicy &middot; Arbeitnow
       </div>
     </div>`;
 }

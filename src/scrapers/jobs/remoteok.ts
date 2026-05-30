@@ -2,6 +2,8 @@ import axios from 'axios';
 import { createHash } from 'crypto';
 import { upsertJob, type Job } from '../../db/jobs.js';
 import { runPipeline, stripHtml } from '../../filters/jobs.js';
+import { extractSalary } from '../../utils/salary.js';
+import { withRetry } from '../../utils/retry.js';
 
 interface RemoteOKEntry {
   slug?:        string;
@@ -14,7 +16,9 @@ interface RemoteOKEntry {
   description?: string;
   url?:         string;
   apply_url?:   string;
-  legal?:       string;   // metadata row marker
+  salary_min?:  number;
+  salary_max?:  number;
+  legal?:       string;
 }
 
 export async function scrapeRemoteOK(): Promise<{ added: number; skipped: number; excluded: number }> {
@@ -23,14 +27,13 @@ export async function scrapeRemoteOK(): Promise<{ added: number; skipped: number
 
   let entries: RemoteOKEntry[];
   try {
-    const { data } = await axios.get<RemoteOKEntry[]>('https://remoteok.com/api', {
-      timeout: 15_000,
-      headers: {
-        'User-Agent': 'tech-digest-mcp/1.0',
-        'Accept':     'application/json',
-      },
-    });
-    // first element is always a legal/metadata object
+    const { data } = await withRetry(
+      () => axios.get<RemoteOKEntry[]>('https://remoteok.com/api', {
+        timeout: 15_000,
+        headers: { 'User-Agent': 'tech-digest-mcp/2.0', Accept: 'application/json' },
+      }),
+      { label: 'remoteok' },
+    );
     entries = Array.isArray(data) ? data.slice(1) : [];
   } catch {
     return { added, skipped, excluded };
@@ -39,28 +42,33 @@ export async function scrapeRemoteOK(): Promise<{ added: number; skipped: number
   for (const entry of entries) {
     if (!entry.position || !entry.url) continue;
 
-    // Sanitize title — RemoteOK occasionally has mangled data with SQL fragments
-    const title = entry.position
-      .replace(/['"\\]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 120);
-
+    const title = entry.position.replace(/['"\\]/g, '').replace(/\s+/g, ' ').trim().slice(0, 120);
     if (!title) continue;
 
     const rawDesc = stripHtml(entry.description ?? '');
     const tags    = entry.tags ?? [];
-    const result  = runPipeline({ title, description: rawDesc, tags });
-    if (!result.accepted) { excluded++; continue; }
-
     const dateStr = entry.date
       ? new Date(entry.date).toISOString().slice(0, 10)
       : entry.epoch
         ? new Date(entry.epoch * 1000).toISOString().slice(0, 10)
         : null;
 
+    const result = runPipeline({
+      title,
+      description: rawDesc,
+      tags,
+      company:     entry.company ?? '',
+      datePosted:  dateStr,
+    });
+    if (!result.accepted) { excluded++; continue; }
+
+    const sal = {
+      min: entry.salary_min ?? extractSalary(rawDesc).min,
+      max: entry.salary_max ?? extractSalary(rawDesc).max,
+    };
+
     const hash = createHash('md5')
-      .update(`${entry.position}|${entry.company ?? ''}|${entry.url}`)
+      .update(`${title}|${entry.company ?? ''}|${entry.url}`)
       .digest('hex');
 
     const job: Job = {
@@ -81,6 +89,8 @@ export async function scrapeRemoteOK(): Promise<{ added: number; skipped: number
       hash,
       score:       result.score,
       first_seen:  now,
+      salary_min:  sal.min,
+      salary_max:  sal.max,
     };
 
     if (upsertJob(job)) added++;
