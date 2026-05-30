@@ -1,0 +1,27 @@
+{
+  "name": "conference-notifications-mcp",
+  "version": "1.0.0",
+  "description": "Local MCP server for USA tech conference notifications with weekly email digest",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "scheduler": "node dist/scheduler.js",
+    "scheduler:now": "node dist/scheduler.js --now"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "axios": "^1.7.9",
+    "better-sqlite3": "^11.3.0",
+    "dotenv": "^16.4.5",
+    "node-cron": "^3.0.3",
+    "nodemailer": "^6.9.15"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.10.0",
+    "@types/nodemailer": "^6.4.15",
+    "@types/node-cron": "^3.0.11",
+    "typescript": "^5.7.0"
+  }
+}
